@@ -130,3 +130,8 @@ class StockAdjustment(BaseModel):
     productId: str
     delta: int
     reason: Optional[str] = ""
+
+
+class LoginRequest(BaseModel):
+    email: str
+    password: str

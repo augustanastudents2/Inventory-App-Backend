@@ -1,15 +1,15 @@
 from fastapi import APIRouter, HTTPException
-from app.models.schemas import UserResponse
+from app.models.schemas import UserResponse, LoginRequest
 from app.core.database import get_db
 from app.core.config import settings
 
 router = APIRouter()
 
 @router.post("/login")
-async def login(credentials: dict):
+async def login(credentials: LoginRequest):
     db = get_db()
-    email = credentials.get("email")
-    password = credentials.get("password")
+    email = credentials.email
+    password = credentials.password
     
     if not email or not password:
         raise HTTPException(status_code=400, detail="Email and password are required")
