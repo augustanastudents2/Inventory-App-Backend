@@ -2,32 +2,40 @@ from fastapi import APIRouter, HTTPException
 from app.models.schemas import UserResponse, LoginRequest
 from app.core.database import get_db
 from app.core.config import settings
+import traceback
 
 router = APIRouter()
 
 @router.post("/login")
 async def login(credentials: LoginRequest):
     db = get_db()
-    email = credentials.email
+    email = credentials.email.strip().lower()
     password = credentials.password
     
     if not email or not password:
         raise HTTPException(status_code=400, detail="Email and password are required")
         
     try:
-        # Authenticate with Supabase Auth
-        auth_response = db.auth.sign_in_with_password({
-            "email": email,
-            "password": password
-        })
+        # 1. Authenticate with Supabase Auth
+        try:
+            auth_response = db.auth.sign_in_with_password({
+                "email": email,
+                "password": password
+            })
+        except Exception as auth_err:
+            auth_msg = str(auth_err)
+            if "Invalid login credentials" in auth_msg:
+                raise HTTPException(status_code=401, detail="Invalid email or password")
+            raise HTTPException(status_code=401, detail=f"Supabase Auth error: {auth_msg}")
         
-        if not auth_response.user:
-            raise HTTPException(status_code=401, detail="Invalid credentials")
+        if not auth_response or not auth_response.user:
+            raise HTTPException(status_code=401, detail="Authentication failed: No user returned")
             
-        # Get user details from our users table to get the role
-        # We use .execute() and check the data list instead of .single() 
-        # to avoid the PGRST116 error if something is slightly off
-        user_query = db.table(settings.USERS_TABLE).select("*").eq("email", email).execute()
+        # 2. Get user details from our users table
+        try:
+            user_query = db.table(settings.USERS_TABLE).select("*").eq("email", email).execute()
+        except Exception as db_err:
+            raise HTTPException(status_code=500, detail=f"Database query error: {str(db_err)}")
         
         if not user_query.data:
             # Fallback for initial admin
@@ -40,23 +48,22 @@ async def login(credentials: LoginRequest):
                 }
             raise HTTPException(
                 status_code=403, 
-                detail=f"User {email} is authenticated in Supabase Auth but not found in the '{settings.USERS_TABLE}' table. Please ensure the email matches exactly."
+                detail=f"User {email} authenticated, but not found in '{settings.USERS_TABLE}' table. Please add this email to the table."
             )
             
-        # Return the first matching user
+        # 3. Return user data and token
+        user_record = user_query.data[0]
         return {
-            **user_query.data[0],
+            "id": str(user_record.get("id")),
+            "email": user_record.get("email"),
+            "name": user_record.get("name"),
+            "role": user_record.get("role"),
             "token": auth_response.session.access_token
         }
         
+    except HTTPException as he:
+        raise he
     except Exception as e:
-        error_msg = str(e)
-        # Handle the specific case where .single() might still be called by accident or other PGRST errors
-        if "PGRST116" in error_msg:
-             raise HTTPException(
-                status_code=403, 
-                detail=f"User {email} not found in the users table. Please check for typos or extra spaces in the email."
-            )
-        if "Invalid login credentials" in error_msg:
-            raise HTTPException(status_code=401, detail="Invalid email or password")
-        raise HTTPException(status_code=500, detail=f"Authentication error: {error_msg}")
+        # Catch-all for unexpected errors with full trace in logs
+        print(f"CRITICAL LOGIN ERROR: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
