@@ -20,8 +20,6 @@ async def login(credentials: LoginRequest):
     try:
         # 1. Authenticate with Supabase Auth
         try:
-            # Note: auth operations still use the regular client/anon key logic internally 
-            # but we use the service client for the table lookup below
             auth_response = db.auth.sign_in_with_password({
                 "email": email_input,
                 "password": password
@@ -36,12 +34,17 @@ async def login(credentials: LoginRequest):
             raise HTTPException(status_code=401, detail="Authentication failed: No user returned")
             
         # 2. Get user details from our users table
-        # Using service_db bypasses RLS
-        try:
-            user_query = db.table(settings.USERS_TABLE).select("*").ilike("email", email_input).execute()
-        except Exception as db_err:
-            raise HTTPException(status_code=500, detail=f"Database query error: {str(db_err)}")
+        # DEBUG: List ALL emails in the table to see what's going on
+        all_users = db.table(settings.USERS_TABLE).select("email").execute()
+        existing_emails = [u.get("email") for u in all_users.data]
         
+        # Try exact match first
+        user_query = db.table(settings.USERS_TABLE).select("*").eq("email", email_input).execute()
+        
+        # Try case-insensitive if exact fails
+        if not user_query.data:
+            user_query = db.table(settings.USERS_TABLE).select("*").ilike("email", email_input).execute()
+            
         if not user_query.data:
             # Fallback for initial admin
             if email_input == "admin@asa.com":
@@ -54,7 +57,13 @@ async def login(credentials: LoginRequest):
             
             raise HTTPException(
                 status_code=403, 
-                detail=f"User '{email_input}' authenticated, but not found in '{settings.USERS_TABLE}' table. Please ensure the email matches exactly in the database."
+                detail={
+                    "error": "User not found in database table",
+                    "authenticated_as": email_input,
+                    "table_searched": settings.USERS_TABLE,
+                    "emails_found_in_table": existing_emails,
+                    "help": "Ensure the email in your 'users' table matches exactly (check for spaces or hidden characters)."
+                }
             )
             
         # 3. Return user data and token
