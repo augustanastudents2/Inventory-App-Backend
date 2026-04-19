@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException
 from app.models.schemas import UserResponse, LoginRequest
-from app.core.database import get_db
+from app.core.database import get_db, get_service_db
 from app.core.config import settings
 import traceback
 
@@ -8,18 +8,22 @@ router = APIRouter()
 
 @router.post("/login")
 async def login(credentials: LoginRequest):
+    # Use service_db to bypass RLS for the internal user lookup
     db = get_service_db()
-    email = credentials.email.strip().lower()
+    # Normalize input email
+    email_input = credentials.email.strip().lower()
     password = credentials.password
     
-    if not email or not password:
+    if not email_input or not password:
         raise HTTPException(status_code=400, detail="Email and password are required")
         
     try:
         # 1. Authenticate with Supabase Auth
         try:
+            # Note: auth operations still use the regular client/anon key logic internally 
+            # but we use the service client for the table lookup below
             auth_response = db.auth.sign_in_with_password({
-                "email": email,
+                "email": email_input,
                 "password": password
             })
         except Exception as auth_err:
@@ -32,23 +36,25 @@ async def login(credentials: LoginRequest):
             raise HTTPException(status_code=401, detail="Authentication failed: No user returned")
             
         # 2. Get user details from our users table
+        # Using service_db bypasses RLS
         try:
-            user_query = db.table(settings.USERS_TABLE).select("*").eq("email", email).execute()
+            user_query = db.table(settings.USERS_TABLE).select("*").ilike("email", email_input).execute()
         except Exception as db_err:
             raise HTTPException(status_code=500, detail=f"Database query error: {str(db_err)}")
         
         if not user_query.data:
             # Fallback for initial admin
-            if email == "admin@asa.com":
+            if email_input == "admin@asa.com":
                 return {
-                    "email": email,
+                    "email": email_input,
                     "name": "ASA Admin",
                     "role": "Admin",
                     "token": auth_response.session.access_token
                 }
+            
             raise HTTPException(
                 status_code=403, 
-                detail=f"User {email} authenticated, but not found in '{settings.USERS_TABLE}' table. Please add this email to the table."
+                detail=f"User '{email_input}' authenticated, but not found in '{settings.USERS_TABLE}' table. Please ensure the email matches exactly in the database."
             )
             
         # 3. Return user data and token
@@ -64,6 +70,5 @@ async def login(credentials: LoginRequest):
     except HTTPException as he:
         raise he
     except Exception as e:
-        # Catch-all for unexpected errors with full trace in logs
         print(f"CRITICAL LOGIN ERROR: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
