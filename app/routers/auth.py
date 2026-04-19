@@ -25,11 +25,12 @@ async def login(credentials: LoginRequest):
             raise HTTPException(status_code=401, detail="Invalid credentials")
             
         # Get user details from our users table to get the role
-        user_data = db.table(settings.USERS_TABLE).select("*").eq("email", email).single().execute()
+        # We use .execute() and check the data list instead of .single() 
+        # to avoid the PGRST116 error if something is slightly off
+        user_query = db.table(settings.USERS_TABLE).select("*").eq("email", email).execute()
         
-        # If user exists in auth but not in our users table, they might be a new user or admin
-        if not user_data.data:
-            # Default for the first admin if not in table yet
+        if not user_query.data:
+            # Fallback for initial admin
             if email == "admin@asa.com":
                 return {
                     "email": email,
@@ -37,15 +38,25 @@ async def login(credentials: LoginRequest):
                     "role": "Admin",
                     "token": auth_response.session.access_token
                 }
-            raise HTTPException(status_code=403, detail="User not authorized in inventory system")
+            raise HTTPException(
+                status_code=403, 
+                detail=f"User {email} is authenticated in Supabase Auth but not found in the '{settings.USERS_TABLE}' table. Please ensure the email matches exactly."
+            )
             
+        # Return the first matching user
         return {
-            **user_data.data,
+            **user_query.data[0],
             "token": auth_response.session.access_token
         }
         
     except Exception as e:
         error_msg = str(e)
+        # Handle the specific case where .single() might still be called by accident or other PGRST errors
+        if "PGRST116" in error_msg:
+             raise HTTPException(
+                status_code=403, 
+                detail=f"User {email} not found in the users table. Please check for typos or extra spaces in the email."
+            )
         if "Invalid login credentials" in error_msg:
             raise HTTPException(status_code=401, detail="Invalid email or password")
         raise HTTPException(status_code=500, detail=f"Authentication error: {error_msg}")
