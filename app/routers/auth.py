@@ -9,17 +9,18 @@ router = APIRouter()
 @router.post("/login")
 async def login(credentials: LoginRequest):
     db = get_db()
-    email = credentials.email.strip().lower()
+    # Normalize input email
+    email_input = credentials.email.strip().lower()
     password = credentials.password
     
-    if not email or not password:
+    if not email_input or not password:
         raise HTTPException(status_code=400, detail="Email and password are required")
         
     try:
         # 1. Authenticate with Supabase Auth
         try:
             auth_response = db.auth.sign_in_with_password({
-                "email": email,
+                "email": email_input,
                 "password": password
             })
         except Exception as auth_err:
@@ -32,23 +33,33 @@ async def login(credentials: LoginRequest):
             raise HTTPException(status_code=401, detail="Authentication failed: No user returned")
             
         # 2. Get user details from our users table
+        # We'll try a case-insensitive search using 'ilike' to be extra safe
         try:
-            user_query = db.table(settings.USERS_TABLE).select("*").eq("email", email).execute()
+            user_query = db.table(settings.USERS_TABLE).select("*").ilike("email", email_input).execute()
         except Exception as db_err:
             raise HTTPException(status_code=500, detail=f"Database query error: {str(db_err)}")
         
         if not user_query.data:
             # Fallback for initial admin
-            if email == "admin@asa.com":
+            if email_input == "admin@asa.com":
                 return {
-                    "email": email,
+                    "email": email_input,
                     "name": "ASA Admin",
                     "role": "Admin",
                     "token": auth_response.session.access_token
                 }
+            
+            # Debugging: let's see what's actually in the table (first 5 users) to help the user
+            try:
+                debug_query = db.table(settings.USERS_TABLE).select("email").limit(5).execute()
+                existing_emails = [r.get("email") for r in debug_query.data]
+                debug_msg = f" Found these emails in table: {existing_emails}"
+            except:
+                debug_msg = ""
+
             raise HTTPException(
                 status_code=403, 
-                detail=f"User {email} authenticated, but not found in '{settings.USERS_TABLE}' table. Please add this email to the table."
+                detail=f"User '{email_input}' authenticated, but not found in '{settings.USERS_TABLE}' table.{debug_msg}"
             )
             
         # 3. Return user data and token
@@ -64,6 +75,5 @@ async def login(credentials: LoginRequest):
     except HTTPException as he:
         raise he
     except Exception as e:
-        # Catch-all for unexpected errors with full trace in logs
         print(f"CRITICAL LOGIN ERROR: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
