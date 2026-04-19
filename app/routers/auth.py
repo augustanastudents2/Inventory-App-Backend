@@ -34,17 +34,16 @@ async def login(credentials: LoginRequest):
             raise HTTPException(status_code=401, detail="Authentication failed: No user returned")
             
         # 2. Get user details from our users table
-        # DEBUG: List ALL emails in the table to see what's going on
-        all_users = db.table(settings.USERS_TABLE).select("email").execute()
-        existing_emails = [u.get("email") for u in all_users.data]
+        # DIAGNOSTIC: Check total row count in the table
+        try:
+            count_query = db.table(settings.USERS_TABLE).select("*", count="exact").limit(1).execute()
+            total_rows = count_query.count if count_query.count is not None else 0
+        except Exception as e:
+            total_rows = f"Error getting count: {str(e)}"
+
+        # Search for the specific user
+        user_query = db.table(settings.USERS_TABLE).select("*").ilike("email", email_input).execute()
         
-        # Try exact match first
-        user_query = db.table(settings.USERS_TABLE).select("*").eq("email", email_input).execute()
-        
-        # Try case-insensitive if exact fails
-        if not user_query.data:
-            user_query = db.table(settings.USERS_TABLE).select("*").ilike("email", email_input).execute()
-            
         if not user_query.data:
             # Fallback for initial admin
             if email_input == "admin@asa.com":
@@ -55,14 +54,24 @@ async def login(credentials: LoginRequest):
                     "token": auth_response.session.access_token
                 }
             
+            # Fetch all emails for debugging if count > 0
+            existing_emails = []
+            if isinstance(total_rows, int) and total_rows > 0:
+                try:
+                    all_users = db.table(settings.USERS_TABLE).select("email").execute()
+                    existing_emails = [u.get("email") for u in all_users.data]
+                except:
+                    pass
+
             raise HTTPException(
                 status_code=403, 
                 detail={
                     "error": "User not found in database table",
                     "authenticated_as": email_input,
-                    "table_searched": settings.USERS_TABLE,
-                    "emails_found_in_table": existing_emails,
-                    "help": "Ensure the email in your 'users' table matches exactly (check for spaces or hidden characters)."
+                    "total_rows_in_table": total_rows,
+                    "emails_in_table": existing_emails,
+                    "table_name": settings.USERS_TABLE,
+                    "supabase_url": settings.SUPABASE_URL
                 }
             )
             
