@@ -20,7 +20,9 @@ class UserBase(BaseModel):
 
 
 class UserCreate(UserBase):
-    pass
+    # Plaintext password is only accepted at creation time so the backend can
+    # create a Supabase Auth user. It is never stored in `users` table.
+    password: Optional[str] = None
 
 
 class UserResponse(UserBase):
