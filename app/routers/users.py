@@ -131,5 +131,17 @@ async def update_user_role(user_id: str, role: UserRole):
 @router.delete("/{user_id}")
 async def delete_user(user_id: str):
     db = get_service_db()
+    auth_err: str | None = None
+    try:
+        # Delete from Supabase Auth first (prevents orphan auth accounts).
+        await _delete_supabase_auth_user(db, user_id)
+    except Exception as exc:
+        # Don't block profile cleanup, but surface the failure.
+        auth_err = str(exc) or repr(exc)
+
+    # Always delete the profile row
     db.table(settings.USERS_TABLE).delete().eq("id", user_id).execute()
+
+    if auth_err:
+        return {"status": "deleted_profile_only", "auth_delete_error": auth_err}
     return {"status": "deleted"}
