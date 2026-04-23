@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from typing import List, Dict, Any
 from app.models.schemas import ProductResponse, ProductCreate, ProductUpdate, StockAdjustment
-from app.core.database import get_db
+from app.core.database import get_db, get_service_db
 from app.core.config import settings
 import uuid
 from datetime import datetime
@@ -35,24 +35,54 @@ def _product_from_db(row: Dict[str, Any]) -> Dict[str, Any]:
         out[reverse.get(k, k)] = v
     return out
 
+def _history_from_db(row: Dict[str, Any]) -> Dict[str, Any]:
+    # stock_history columns: id, productid, at, delta, reason
+    return {
+        "id": row.get("id"),
+        "at": row.get("at"),
+        "delta": row.get("delta"),
+        "reason": row.get("reason"),
+    }
+
+def _attach_stock_history(db: Any, product_row: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    The frontend expects `product.stockHistory` as a list of events.
+    We store those in `stock_history` keyed by `productid`.
+    """
+    product = _product_from_db(product_row)
+    try:
+        hist_resp = (
+            db.table(settings.STOCK_HISTORY_TABLE)
+            .select("id, at, delta, reason")
+            .eq("productid", product_row.get("id"))
+            .order("at", desc=False)
+            .execute()
+        )
+        product["stockHistory"] = [_history_from_db(e) for e in (hist_resp.data or [])]
+    except Exception:
+        # If history fetch fails, don't break product listing/detail.
+        product["stockHistory"] = []
+    return product
+
 @router.get("/", response_model=List[ProductResponse])
 async def get_products():
-    db = get_db()
+    # Use service client to ensure we can read `stock_history` even when RLS is enabled.
+    db = get_service_db()
     response = db.table(settings.PRODUCTS_TABLE).select("*").execute()
     # In a real app, we'd also fetch stock history for each product or use a join
-    return [_product_from_db(p) for p in (response.data or [])]
+    return [_attach_stock_history(db, p) for p in (response.data or [])]
 
 @router.get("/{product_id}", response_model=ProductResponse)
 async def get_product(product_id: str):
-    db = get_db()
+    db = get_service_db()
     response = db.table(settings.PRODUCTS_TABLE).select("*").eq("id", product_id).single().execute()
     if not response.data:
         raise HTTPException(status_code=404, detail="Product not found")
-    return _product_from_db(response.data)
+    return _attach_stock_history(db, response.data)
 
 @router.post("/", response_model=ProductResponse)
 async def create_product(product: ProductCreate):
-    db = get_db()
+    db = get_service_db()
     product_id = str(uuid.uuid4())
     now = datetime.utcnow().isoformat()
     
@@ -78,11 +108,13 @@ async def create_product(product: ProductCreate):
     response = db.table(settings.PRODUCTS_TABLE).insert(product_data).execute()
     db.table(settings.STOCK_HISTORY_TABLE).insert(history_entry).execute()
     
-    return _product_from_db(response.data[0])
+    created = _product_from_db(response.data[0])
+    created["stockHistory"] = [_history_from_db(history_entry)]
+    return created
 
 @router.put("/{product_id}", response_model=ProductResponse)
 async def update_product(product_id: str, updates: ProductUpdate):
-    db = get_db()
+    db = get_service_db()
     now = datetime.utcnow().isoformat()
     
     # Get current product to recompute availability if needed
@@ -104,7 +136,7 @@ async def update_product(product_id: str, updates: ProductUpdate):
 
 @router.post("/adjust-stock")
 async def adjust_stock(adjustment: StockAdjustment):
-    db = get_db()
+    db = get_service_db()
     now = datetime.utcnow().isoformat()
     
     current = db.table(settings.PRODUCTS_TABLE).select("*").eq("id", adjustment.productId).single().execute()
@@ -134,6 +166,6 @@ async def adjust_stock(adjustment: StockAdjustment):
 
 @router.delete("/{product_id}")
 async def delete_product(product_id: str):
-    db = get_db()
+    db = get_service_db()
     db.table(settings.PRODUCTS_TABLE).delete().eq("id", product_id).execute()
     return {"status": "deleted"}
