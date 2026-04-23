@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     STOCK_HISTORY_TABLE: str = "stock_history"
     
     # CORS
-    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173"
+    CORS_ORIGINS: str = "http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173,https://inventory-app-frontend-lilac.vercel.app"
     
     def get_cors_origins(self) -> List[str]:
         if isinstance(self.CORS_ORIGINS, str):

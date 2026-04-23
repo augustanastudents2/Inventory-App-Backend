@@ -9,6 +9,8 @@
 .env.local
 .env.*.local
 test_db.py
+debug_tables.py
+debug_tables_v2.py
 
 # -----------------------------------------------------------------------------
 # Virtual environments
