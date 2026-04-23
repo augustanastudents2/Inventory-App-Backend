@@ -6,6 +6,21 @@ from app.core.config import settings
 
 router = APIRouter()
 
+def _api_error_code(exc: Exception) -> str | None:
+    """
+    Supabase/postgrest errors stringify to a dict-like message. We keep this
+    helper lightweight to avoid binding to a specific exception class.
+    """
+    try:
+        if isinstance(exc.args[0], dict):
+            return exc.args[0].get("code")
+    except Exception:
+        return None
+    return None
+
+def _conflict_as_existing(detail: str) -> HTTPException:
+    return HTTPException(status_code=409, detail=detail)
+
 # Categories
 @router.get("/categories", response_model=List[CategoryResponse])
 async def get_categories():
@@ -15,7 +30,15 @@ async def get_categories():
 @router.post("/categories", response_model=CategoryResponse)
 async def add_category(cat: CategoryBase):
     db = get_db()
-    return db.table(settings.CATEGORIES_TABLE).insert(cat.dict()).execute().data[0]
+    try:
+        return db.table(settings.CATEGORIES_TABLE).insert(cat.dict()).execute().data[0]
+    except Exception as exc:
+        if _api_error_code(exc) == "23505":
+            existing = db.table(settings.CATEGORIES_TABLE).select("*").eq("name", cat.name).single().execute()
+            if existing.data:
+                return existing.data
+            raise _conflict_as_existing(f"Category '{cat.name}' already exists")
+        raise
 
 @router.patch("/categories/{old_name}")
 async def update_category(old_name: str, cat: CategoryBase):
@@ -41,7 +64,15 @@ async def get_tags():
 @router.post("/tags", response_model=TagResponse)
 async def add_tag(tag: TagBase):
     db = get_db()
-    return db.table(settings.TAGS_TABLE).insert(tag.dict()).execute().data[0]
+    try:
+        return db.table(settings.TAGS_TABLE).insert(tag.dict()).execute().data[0]
+    except Exception as exc:
+        if _api_error_code(exc) == "23505":
+            existing = db.table(settings.TAGS_TABLE).select("*").eq("name", tag.name).single().execute()
+            if existing.data:
+                return existing.data
+            raise _conflict_as_existing(f"Tag '{tag.name}' already exists")
+        raise
 
 @router.patch("/tags/{old_name}")
 async def update_tag(old_name: str, tag: TagBase):
@@ -66,7 +97,20 @@ async def get_storage_locations():
 @router.post("/storage-locations", response_model=StorageLocationResponse)
 async def add_storage(loc: StorageLocationBase):
     db = get_db()
-    return db.table(settings.STORAGE_LOCATIONS_TABLE).insert(loc.dict()).execute().data[0]
+    try:
+        return db.table(settings.STORAGE_LOCATIONS_TABLE).insert(loc.dict()).execute().data[0]
+    except Exception as exc:
+        if _api_error_code(exc) == "23505":
+            q = db.table(settings.STORAGE_LOCATIONS_TABLE).select("*").eq("area", loc.area)
+            if loc.sub is None:
+                q = q.is_("sub", None)
+            else:
+                q = q.eq("sub", loc.sub)
+            existing = q.single().execute()
+            if existing.data:
+                return existing.data
+            raise _conflict_as_existing("Storage location already exists")
+        raise
 
 @router.patch("/storage-locations")
 async def update_storage(payload: Dict[str, Any]):
@@ -87,7 +131,15 @@ async def get_vendors():
 @router.post("/vendors", response_model=VendorResponse)
 async def add_vendor(vendor: VendorBase):
     db = get_db()
-    return db.table(settings.VENDORS_TABLE).insert(vendor.dict()).execute().data[0]
+    try:
+        return db.table(settings.VENDORS_TABLE).insert(vendor.dict()).execute().data[0]
+    except Exception as exc:
+        if _api_error_code(exc) == "23505":
+            existing = db.table(settings.VENDORS_TABLE).select("*").eq("name", vendor.name).single().execute()
+            if existing.data:
+                return existing.data
+            raise _conflict_as_existing(f"Vendor '{vendor.name}' already exists")
+        raise
 
 @router.patch("/vendors/{old_name}")
 async def update_vendor(old_name: str, vendor: VendorBase):
