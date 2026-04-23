@@ -1,5 +1,5 @@
-from fastapi import APIRouter, Depends, HTTPException
-from typing import List, Dict, Any
+from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import List, Dict, Any, Optional
 from app.models.schemas import CategoryResponse, TagResponse, StorageLocationResponse, VendorResponse, CategoryBase, TagBase, StorageLocationBase, VendorBase
 from app.core.database import get_db
 from app.core.config import settings
@@ -122,6 +122,25 @@ async def update_storage(payload: Dict[str, Any]):
     db.table(settings.PRODUCTS_TABLE).update({"storage": new_loc}).eq("storage->>area", old_loc["area"]).eq("storage->>sub", old_loc["sub"]).execute()
     return {"status": "updated"}
 
+@router.delete("/storage-locations")
+async def delete_storage_location(area: str = Query(...), sub: Optional[str] = Query(None)):
+    db = get_db()
+    q = db.table(settings.STORAGE_LOCATIONS_TABLE).delete().eq("area", area)
+    if sub is None:
+        q = q.is_("sub", None)
+    else:
+        q = q.eq("sub", sub)
+    q.execute()
+    # Clear storage for products referencing this location
+    cleared = {"area": "", "sub": ""}
+    prod_q = db.table(settings.PRODUCTS_TABLE).update({"storage": cleared}).eq("storage->>area", area)
+    if sub is None:
+        prod_q = prod_q.is_("storage->>sub", None)
+    else:
+        prod_q = prod_q.eq("storage->>sub", sub)
+    prod_q.execute()
+    return {"status": "deleted"}
+
 # Vendors
 @router.get("/vendors", response_model=List[VendorResponse])
 async def get_vendors():
@@ -147,3 +166,11 @@ async def update_vendor(old_name: str, vendor: VendorBase):
     db.table(settings.VENDORS_TABLE).update(vendor.dict()).eq("name", old_name).execute()
     db.table(settings.PRODUCTS_TABLE).update({"vendor": vendor.dict()}).eq("vendor->>name", old_name).execute()
     return {"status": "updated"}
+
+@router.delete("/vendors/{name}")
+async def delete_vendor(name: str):
+    db = get_db()
+    db.table(settings.VENDORS_TABLE).delete().eq("name", name).execute()
+    # Clear vendor for products referencing this vendor
+    db.table(settings.PRODUCTS_TABLE).update({"vendor": {"name": "", "contact": ""}}).eq("vendor->>name", name).execute()
+    return {"status": "deleted"}
