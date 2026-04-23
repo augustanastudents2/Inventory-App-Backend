@@ -13,12 +13,34 @@ def compute_availability(quantity: int, threshold: int) -> str:
     if quantity <= threshold: return "Low stock"
     return "In-stock"
 
+_PRODUCT_DB_FIELD_MAP = {
+    # Supabase columns in your project are all-lowercase without underscores
+    "buyingPrice": "buyingprice",
+    "thresholdValue": "thresholdvalue",
+    "expiryDate": "expirydate",
+    "createdAt": "createdat",
+    "updatedAt": "updatedat",
+}
+
+def _product_to_db(payload: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for k, v in payload.items():
+        out[_PRODUCT_DB_FIELD_MAP.get(k, k)] = v
+    return out
+
+def _product_from_db(row: Dict[str, Any]) -> Dict[str, Any]:
+    reverse = {v: k for k, v in _PRODUCT_DB_FIELD_MAP.items()}
+    out: Dict[str, Any] = {}
+    for k, v in row.items():
+        out[reverse.get(k, k)] = v
+    return out
+
 @router.get("/", response_model=List[ProductResponse])
 async def get_products():
     db = get_db()
     response = db.table(settings.PRODUCTS_TABLE).select("*").execute()
     # In a real app, we'd also fetch stock history for each product or use a join
-    return response.data
+    return [_product_from_db(p) for p in (response.data or [])]
 
 @router.get("/{product_id}", response_model=ProductResponse)
 async def get_product(product_id: str):
@@ -26,7 +48,7 @@ async def get_product(product_id: str):
     response = db.table(settings.PRODUCTS_TABLE).select("*").eq("id", product_id).single().execute()
     if not response.data:
         raise HTTPException(status_code=404, detail="Product not found")
-    return response.data
+    return _product_from_db(response.data)
 
 @router.post("/", response_model=ProductResponse)
 async def create_product(product: ProductCreate):
@@ -36,18 +58,18 @@ async def create_product(product: ProductCreate):
     
     availability = compute_availability(product.quantity, product.thresholdValue)
     
-    product_data = product.dict()
+    product_data = _product_to_db(product.dict())
     product_data.update({
         "id": product_id,
-        "createdAt": now,
-        "updatedAt": now,
+        _PRODUCT_DB_FIELD_MAP.get("createdAt", "createdAt"): now,
+        _PRODUCT_DB_FIELD_MAP.get("updatedAt", "updatedAt"): now,
         "availability": availability
     })
     
     # Create initial stock history
     history_entry = {
         "id": f"evt_{int(datetime.utcnow().timestamp())}",
-        "productId": product_id,
+        "productid": product_id,
         "at": now,
         "delta": product.quantity,
         "reason": "Initial stock"
@@ -56,7 +78,7 @@ async def create_product(product: ProductCreate):
     response = db.table(settings.PRODUCTS_TABLE).insert(product_data).execute()
     db.table(settings.STOCK_HISTORY_TABLE).insert(history_entry).execute()
     
-    return response.data[0]
+    return _product_from_db(response.data[0])
 
 @router.put("/{product_id}", response_model=ProductResponse)
 async def update_product(product_id: str, updates: ProductUpdate):
@@ -68,16 +90,17 @@ async def update_product(product_id: str, updates: ProductUpdate):
     if not current.data:
         raise HTTPException(status_code=404, detail="Product not found")
         
-    update_data = updates.dict(exclude_unset=True)
-    update_data["updatedAt"] = now
+    update_data = _product_to_db(updates.dict(exclude_unset=True))
+    update_data[_PRODUCT_DB_FIELD_MAP.get("updatedAt", "updatedAt")] = now
     
-    if "quantity" in update_data or "thresholdValue" in update_data:
-        qty = update_data.get("quantity", current.data["quantity"])
-        thr = update_data.get("thresholdValue", current.data["thresholdValue"])
+    thr_key = _PRODUCT_DB_FIELD_MAP.get("thresholdValue", "thresholdValue")
+    if "quantity" in update_data or thr_key in update_data:
+        qty = update_data.get("quantity", current.data.get("quantity"))
+        thr = update_data.get(thr_key, current.data.get(thr_key))
         update_data["availability"] = compute_availability(qty, thr)
         
     response = db.table(settings.PRODUCTS_TABLE).update(update_data).eq("id", product_id).execute()
-    return response.data[0]
+    return _product_from_db(response.data[0])
 
 @router.post("/adjust-stock")
 async def adjust_stock(adjustment: StockAdjustment):
@@ -89,17 +112,18 @@ async def adjust_stock(adjustment: StockAdjustment):
         raise HTTPException(status_code=404, detail="Product not found")
         
     new_qty = max(0, current.data["quantity"] + adjustment.delta)
-    new_availability = compute_availability(new_qty, current.data["thresholdValue"])
+    thr_key = _PRODUCT_DB_FIELD_MAP.get("thresholdValue", "thresholdValue")
+    new_availability = compute_availability(new_qty, current.data.get(thr_key, 0))
     
     db.table(settings.PRODUCTS_TABLE).update({
         "quantity": new_qty,
         "availability": new_availability,
-        "updatedAt": now
+        _PRODUCT_DB_FIELD_MAP.get("updatedAt", "updatedAt"): now
     }).eq("id", adjustment.productId).execute()
     
     history_entry = {
         "id": f"evt_{int(datetime.utcnow().timestamp())}",
-        "productId": adjustment.productId,
+        "productid": adjustment.productId,
         "at": now,
         "delta": adjustment.delta,
         "reason": adjustment.reason or "Stock adjustment"

@@ -49,10 +49,19 @@ async def health_check() -> Dict[str, str]:
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    return JSONResponse(
+    resp = JSONResponse(
         status_code=500,
         content={"detail": "Internal server error", "message": str(exc)}
     )
+    # Ensure browsers can read error responses across origins.
+    # CORSMiddleware will handle most cases, but when we return a custom 500 response
+    # we add the appropriate CORS headers here too.
+    origin = request.headers.get("origin")
+    if origin and origin in settings.get_cors_origins():
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Access-Control-Allow-Credentials"] = "true"
+        resp.headers.setdefault("Vary", "Origin")
+    return resp
 
 
 if __name__ == "__main__":
