@@ -93,9 +93,15 @@ async def add_user(user: UserCreate):
             name=user.name,
             role=str(user.role),
         )
+    except HTTPException as he:
+        # Supabase returns 400/422 with messages like "User already registered"
+        detail = str(he.detail or "")
+        if he.status_code in (400, 409, 422) and "already" in detail.lower():
+            raise HTTPException(status_code=409, detail="A user with this email already exists")
+        raise
     except Exception as exc:
-        msg = str(exc)
-        if "already" in msg.lower():
+        msg = str(exc) or repr(exc)
+        if "already" in msg.lower() or "registered" in msg.lower():
             raise HTTPException(status_code=409, detail="A user with this email already exists")
         raise HTTPException(status_code=500, detail=f"Failed to create auth user: {msg}")
 
